@@ -1,12 +1,12 @@
+import os
 from langchain_huggingface.llms import HuggingFacePipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
 from langchain import PromptTemplate, LLMChain
-import promptlayer
 import wandb
 from textstat import flesch_reading_ease
 import re
-from trulens_eval import Tru, Feedback
-from promptlayer import PromptLayer
+from dotenv import load_dotenv
+import requests
 
 class LangChain:
     def __init__(self):
@@ -27,29 +27,33 @@ class LangChain:
 
         self.hf = HuggingFacePipeline(pipeline=self.pipe)
         wandb.init(project="patient_summary_demo")
-        self.pl_client = PromptLayer()
+        load_dotenv()
+        self.promptlayer_api_key = os.getenv("PROMPTLAYER_API_KEY")
 
     def generate_prompt_template(self, template_text=None):
         if template_text is None:
-            template_text = (
-                "Fasse den folgenden medizinischen Befund so zusammen, "
-                "dass ein Patient ohne medizinische Vorkenntnisse ihn versteht:\n{befund}"
-            )
+            template_text = """
+        You are a medical communication assistant specialized in explaining complex medical information to patients in clear, simple, and empathetic language.
+    
+        Your tasks:
+        - Simplify medical texts written by doctors.
+        - Preserve the *medical accuracy* but remove unnecessary jargon.
+        - Use neutral, supportive, and professional tone.
+        - Structure explanations with short paragraphs, bullet points, and optional summaries.
+        - Never add or invent medical information not in the original text.
+        - Do not provide medical advice beyond what is in the original.
+    
+        Doctor's report:
+        {doctor_text}
+        """
         return PromptTemplate.from_template(template_text)
 
-    def generate_chain(self, prompt):
-        return LLMChain(prompt=prompt, llm=self.hf)
+    def generate_chain(self, prompt_template):
+        return LLMChain(prompt=prompt_template, llm=self.hf)
 
-    def generate_example(self):
-        return (
-            "Patient zeigt erhöhte Blutzuckerwerte (HbA1c 7,8%), leicht erhöhtes LDL-Cholesterin, "
-            "Blutdruck im oberen Normalbereich.\n"
-            "Empfehlung: Ernährungsumstellung, regelmäßige Bewegung, Kontrolle in 3 Monaten, "
-            "mögliche medikamentöse Therapie bei Verschlechterung."
-        )
 
-    def generate_summary(self, chain, findings):
-        summary = chain.run(findings)
+    def generate_summary(self, chain, doctor_text):
+        summary = chain.run({"doctor_text": doctor_text})
         print(summary)
         return summary
 
@@ -67,55 +71,84 @@ class LangChain:
         })
 
     def log_promptlayer(self, prompt_text, summary, prompt_version="default"):
-        self.pl_client.log_prompt(
-            prompt_text=prompt_text,
-            output_text=summary,
-            tags=[prompt_version]
-        )
+        """
+        Manually logs your MedMobile run to PromptLayer via REST API.
+        """
+        if not self.promptlayer_api_key:
+            print("No PromptLayer API key found. Skipping logging.")
+            return
+
+        data = {
+            "prompt": prompt_text,
+            "response": summary,
+            "model": self.model_id,
+            "tags": [prompt_version],
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.promptlayer_api_key}"
+        }
+
+        try:
+            res = requests.post("https://api.promptlayer.com/v1/prompts",
+                                json=data, headers=headers)
+            if res.status_code == 200:
+                print(f"Logged to PromptLayer (tag: {prompt_version})")
+            else:
+                print(f"PromptLayer logging failed: {res.status_code} - {res.text}")
+        except Exception as e:
+            print(f"PromptLayer logging error: {e}")
+
 
     def select_best_summary(self, summaries_metrics, min_words=20):
         filtered = [s for s in summaries_metrics if s["word_count"] >= min_words]
+        if not filtered:
+            return None
         best = max(filtered, key=lambda x: x["flesch_score"])
         return best
 
-    def manage_langchain(self, template_text=None, example_text=None, prompt_version="default"):
-        prompt = self.generate_prompt_template(template_text)
-        chain = self.generate_chain(prompt)
-        example = example_text or self.generate_example()
-        summary = self.generate_summary(chain, example)
-        self.log_promptlayer(prompt.template, summary, prompt_version)
+
+    def manage_langchain(self, doctor_text, template_text=None, prompt_version="default"):
+        prompt_template = self.generate_prompt_template(template_text)
+        chain = self.generate_chain(prompt_template)
+        summary = self.generate_summary(chain, doctor_text)
+        self.log_promptlayer(prompt_template.template, summary, prompt_version)
         self.log_metrics(summary, prompt_version)
         return summary
+
 
 if __name__ == "__main__":
     med_chain = LangChain()
     summaries_metrics = []
+    template_v2 = "Explain this medical report in simple language for a patient (under 100 words):\n{doctor_text}"
 
-    summary_v1 = med_chain.manage_langchain(prompt_version="v1")
-    summaries_metrics.append({
-        "prompt_version": "v1",
-        "summary": summary_v1,
-        "flesch_score": flesch_reading_ease(summary_v1),
-        "word_count": len(summary_v1.split())
-    })
+    report1 = """
+Patient shows elevated blood sugar (HbA1c 7.8%), slightly high LDL cholesterol, blood pressure in the upper normal range.
+Recommendation: lifestyle modification, follow-up in 3 months.
+"""
+    report2 = """Patient has mild hypertension and elevated liver enzymes. Recommendation: diet change, regular exercise, monitor labs in 6 weeks."""
 
-    template_v2 = (
-        "Erkläre diesen medizinischen Bericht in einfacher Sprache für einen Patienten. "
-        "Halte die Zusammenfassung unter 100 Wörtern:\n{befund}"
-    )
-    summary_v2 = med_chain.manage_langchain(template_text=template_v2, prompt_version="v2")
-    summaries_metrics.append({
-        "prompt_version": "v2",
-        "summary": summary_v2,
-        "flesch_score": flesch_reading_ease(summary_v2),
-        "word_count": len(summary_v2.split())
-    })
+    reports = [report1, report2]
+    templates = [("v1", None), ("v2", template_v2)]
 
+    summaries_metrics = []
+
+    for r in reports:
+        for version, tmpl in templates:
+            summary = med_chain.manage_langchain(r, template_text=tmpl, prompt_version=version)
+            summaries_metrics.append({
+                "prompt_version": version,
+                "summary": summary,
+                "flesch_score": flesch_reading_ease(summary),
+                "word_count": len(summary.split())
+            })
+
+    # Select best summary
     best_summary = med_chain.select_best_summary(summaries_metrics, min_words=20)
 
-    print("\n=== Beste Prompt-Version ===")
+    print("\n=== Best Prompt Version ===")
     print(f"Version: {best_summary['prompt_version']}")
-    print(f"Flesch-Score: {best_summary['flesch_score']}")
-    print(f"Wortanzahl: {best_summary['word_count']}")
-    print("Zusammenfassung:\n", best_summary["summary"])
-
+    print(f"Flesch Score: {best_summary['flesch_score']}")
+    print(f"Word Count: {best_summary['word_count']}")
+    print("Summary:\n", best_summary["summary"])
