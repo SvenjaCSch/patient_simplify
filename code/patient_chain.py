@@ -18,7 +18,7 @@ class LangChain:
             "text-generation",
             model=self.model,
             tokenizer=self.tokenizer,
-            max_new_tokens=512,
+            max_new_tokens=200,
             do_sample=True,
             top_k=10,
             num_return_sequences=1,
@@ -26,9 +26,10 @@ class LangChain:
         )
 
         self.hf = HuggingFacePipeline(pipeline=self.pipe)
-        wandb.init(project="patient_summary_demo")
         load_dotenv()
         self.promptlayer_api_key = os.getenv("PROMPTLAYER_API_KEY")
+        os.environ["WANDB_API_KEY"] = os.getenv("WANDB_API_KEY")
+        wandb.init(project="patient_simplify")
 
     def generate_prompt_template(self, template_text=None):
         if template_text is None:
@@ -93,7 +94,7 @@ class LangChain:
         try:
             res = requests.post("https://api.promptlayer.com/v1/prompts",
                                 json=data, headers=headers)
-            if res.status_code == 200:
+            if res.ok:
                 print(f"Logged to PromptLayer (tag: {prompt_version})")
             else:
                 print(f"PromptLayer logging failed: {res.status_code} - {res.text}")
@@ -134,11 +135,12 @@ Recommendation: lifestyle modification, follow-up in 3 months.
 
     summaries_metrics = []
 
-    for r in reports:
+    for i, r in enumerate(reports, start=1):
         for version, tmpl in templates:
-            summary = med_chain.manage_langchain(r, template_text=tmpl, prompt_version=version)
+            prompt_tag = f"{version}_r{i}"
+            summary = med_chain.manage_langchain(r, template_text=tmpl, prompt_version=prompt_tag)
             summaries_metrics.append({
-                "prompt_version": version,
+                "prompt_version": prompt_tag,
                 "summary": summary,
                 "flesch_score": flesch_reading_ease(summary),
                 "word_count": len(summary.split())
