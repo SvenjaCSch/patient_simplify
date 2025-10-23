@@ -1,12 +1,25 @@
 import os
-from langchain_huggingface.llms import HuggingFacePipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-from langchain import PromptTemplate, LLMChain
+from langchain.chains import LLMChain
+from langchain.prompts.prompt import PromptTemplate
+from langchain_huggingface.llms import HuggingFacePipeline
 import wandb
 from textstat import flesch_reading_ease
 import re
 from dotenv import load_dotenv
 import requests
+
+"""
+COLAB Specific
+Start Sequence
+"""
+from huggingface_hub import login
+from google.colab import userdata
+hf_token = userdata.get('Hugging')
+login(hf_token)
+"""
+End Sequence
+"""
 
 class LangChain:
     def __init__(self):
@@ -29,6 +42,17 @@ class LangChain:
         load_dotenv()
         self.promptlayer_api_key = os.getenv("PROMPTLAYER_API_KEY")
         os.environ["WANDB_API_KEY"] = os.getenv("WANDB_API_KEY")
+
+        """
+        If using Colab, do instead
+        Start sequence
+        """
+        self.promptlayer_api_key = userdata.get('PROMPTLAYER_API_KEY')
+        os.environ["WANDB_API_KEY"] = userdata.get('WANDB_API_KEY')
+        """
+        End Sequence
+        """
+
         wandb.init(project="patient_simplify")
 
     def generate_prompt_template(self, template_text=None):
@@ -146,7 +170,6 @@ Recommendation: lifestyle modification, follow-up in 3 months.
                 "word_count": len(summary.split())
             })
 
-    # Select best summary
     best_summary = med_chain.select_best_summary(summaries_metrics, min_words=20)
 
     print("\n=== Best Prompt Version ===")
