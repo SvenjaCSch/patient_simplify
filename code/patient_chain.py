@@ -10,8 +10,7 @@ from dotenv import load_dotenv
 import requests
 
 """
-COLAB Specific
-Start Sequence
+COLAB Specific Start Sequence
 """
 from huggingface_hub import login
 from google.colab import userdata
